@@ -1,9 +1,8 @@
 """Tests for reward functions."""
 
 import numpy as np
-import pytest
 
-from src.bandit_clustering.bandits.reward_functions import LinearReward
+from src.bandit_clustering.bandits.reward_functions import LinearReward, QuadraticReward
 from src.bandit_clustering.utils.rng import create_rng
 
 
@@ -94,3 +93,50 @@ def test_linear_reward_domain():
     for x in test_points:
         reward = reward_fn(x)
         assert 0.0 <= reward <= 1.0
+
+
+def test_quadratic_reward_initialization():
+    """Test QuadraticReward initialization."""
+    d = 3
+    reward_fn = QuadraticReward(d, rng=create_rng(0))
+
+    assert reward_fn.d == d
+    assert reward_fn._optimum_point.shape == (d,)
+    assert np.all(reward_fn._optimum_point == 1.0)
+
+
+def test_quadratic_reward_evaluation_and_optimum():
+    """Quadratic reward should peak at x=[1,...,1] and stay in [0, 1]."""
+    d = 2
+    reward_fn = QuadraticReward(d, rng=create_rng(0))
+
+    x1 = np.array([0.0, 0.0])
+    x2 = np.array([0.5, 0.5])
+    x3 = np.array([1.0, 1.0])
+
+    r1 = reward_fn(x1)
+    r2 = reward_fn(x2)
+    r3 = reward_fn(x3)
+
+    assert 0.0 <= r1 <= 1.0
+    assert 0.0 <= r2 <= 1.0
+    assert 0.0 <= r3 <= 1.0
+    assert r1 < r2 < r3
+
+    opt_value, opt_point = reward_fn.get_global_optimum()
+    assert np.all(opt_point == 1.0)
+    assert abs(opt_value - 1.0) < 1e-10
+
+
+def test_reward_function_vectorized_input():
+    """Reward functions should support vectorized input (n, d)."""
+    X = np.array([[0.0, 0.0], [0.5, 0.5], [1.0, 1.0]])
+
+    linear = LinearReward(2, rng=create_rng(0))
+    quadratic = QuadraticReward(2, rng=create_rng(0))
+
+    linear_values = linear(X)
+    quadratic_values = quadratic(X)
+
+    assert linear_values.shape == (3,)
+    assert quadratic_values.shape == (3,)

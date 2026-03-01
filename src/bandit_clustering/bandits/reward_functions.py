@@ -1,8 +1,9 @@
 """Reward functions for synthetic bandit environments."""
 
-import numpy as np
 from abc import ABC, abstractmethod
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
+
+import numpy as np
 
 
 class RewardFunction(ABC):
@@ -39,6 +40,21 @@ class RewardFunction(ABC):
         """
         pass
 
+    def _coerce_input(
+        self, x: np.ndarray
+    ) -> Tuple[np.ndarray, bool]:
+        """Normalize input to 2D array and track whether caller passed one sample."""
+        X = np.asarray(x, dtype=float)
+        if X.ndim == 1:
+            if X.shape[0] != self.d:
+                raise ValueError(f"Expected shape ({self.d},), got {X.shape}")
+            return X.reshape(1, -1), True
+        if X.ndim == 2:
+            if X.shape[1] != self.d:
+                raise ValueError(f"Expected shape (n, {self.d}), got {X.shape}")
+            return X, X.shape[0] == 1
+        raise ValueError(f"Expected 1D or 2D input, got ndim={X.ndim}")
+
 
 class LinearReward(RewardFunction):
     """Linear reward function: f(x) = x[0] 
@@ -68,7 +84,7 @@ class LinearReward(RewardFunction):
         
         self._optimum_value = 1
     
-    def __call__(self, X: np.ndarray) -> float:
+    def __call__(self, X: np.ndarray) -> Union[float, np.ndarray]:
         """Evaluate linear reward.
         
         Args:
@@ -76,7 +92,11 @@ class LinearReward(RewardFunction):
 
         """
         
-        return X.mean(axis=1)
+        X2d, single = self._coerce_input(X)
+        values = X2d.mean(axis=1)
+        if single:
+            return float(values[0])
+        return values
     
     def get_global_optimum(self) -> Tuple[float, np.ndarray]:
         """Get the global optimum (exact, predefined).
@@ -95,4 +115,33 @@ class LinearReward(RewardFunction):
         Returns:
             Reward of the best candidate.
         """
-        return np.max(self.__call__(candidates))
+        return float(np.max(self.__call__(candidates)))
+
+
+class QuadraticReward(RewardFunction):
+    """Quadratic reward: f(x) = 1 - mean((1 - x)^2).
+
+    The global optimum is at x = [1, ..., 1] with value 1.
+    """
+
+    def __init__(
+        self,
+        d: int,
+        rng: Optional[np.random.Generator] = None,
+    ):
+        super().__init__(d, rng)
+        self._optimum_point = np.ones(d)
+        self._optimum_value = 1.0
+
+    def __call__(self, X: np.ndarray) -> Union[float, np.ndarray]:
+        X2d, single = self._coerce_input(X)
+        values = 1.0 - np.mean((1.0 - X2d) ** 2, axis=1)
+        if single:
+            return float(values[0])
+        return values
+
+    def get_global_optimum(self) -> Tuple[float, np.ndarray]:
+        return self._optimum_value, self._optimum_point.copy()
+
+    def get_oracle_reward(self, candidates: np.ndarray) -> float:
+        return float(np.max(self.__call__(candidates)))
