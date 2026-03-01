@@ -10,6 +10,12 @@ from typing import List, Optional, Tuple
 # Add project root to Python path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+try:
+    from joblib import Parallel, delayed
+except ModuleNotFoundError:
+    Parallel = None
+    delayed = None
+
 from src.bandit_clustering.agents import AdaptivePartitionUCB, BinnedPartitionUCB
 from src.bandit_clustering.bandits import CandidateSetBanditEnv
 from src.bandit_clustering.bandits.reward_functions import LinearReward, QuadraticReward
@@ -80,6 +86,32 @@ def run_one_configuration(
     return series
 
 
+def run_job(
+    *,
+    job_idx: int,
+    run_id: int,
+    seed: int,
+    K: int,
+    d: int,
+    T: int,
+    record_every: int,
+    reward_name: str,
+    agent_name: str,
+    depth: Optional[int],
+) -> Tuple[int, int, int, int, str, str, Optional[int], int, List[Tuple[int, float, float]]]:
+    series = run_one_configuration(
+        seed=seed,
+        K=K,
+        d=d,
+        T=T,
+        record_every=record_every,
+        reward_name=reward_name,
+        agent_name=agent_name,
+        depth=depth,
+    )
+    return (job_idx, run_id, seed, K, reward_name, agent_name, depth, T, series)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run multiple regret experiments to one CSV.")
     parser.add_argument("--seed-start", type=int, default=0, help="Start seed (inclusive).")
@@ -106,6 +138,18 @@ def main() -> None:
         type=str,
         default="results/summary/multiple_regret.csv",
         help="Output CSV path.",
+    )
+    parser.add_argument(
+        "--n-jobs",
+        type=int,
+        default=-1,
+        help="Number of parallel workers for joblib (-1 means all cores).",
+    )
+    parser.add_argument(
+        "--parallel-verbose",
+        type=int,
+        default=10,
+        help="Joblib verbosity level (0 to disable progress output).",
     )
     args = parser.parse_args()
 
@@ -136,74 +180,74 @@ def main() -> None:
         "cumulative_global_regret",
     ]
 
-    run_counter = 0
-    total_jobs = args.num_runs * len(Ks) * (1 + len(depths))
+    jobs = []
+    job_idx = 0
+    for run_offset in range(args.num_runs):
+        seed = args.seed_start + run_offset
+        for K in Ks:
+            jobs.append(
+                {
+                    "job_idx": job_idx,
+                    "run_id": run_offset,
+                    "seed": seed,
+                    "K": K,
+                    "d": args.d,
+                    "T": args.T,
+                    "record_every": args.record_every,
+                    "reward_name": args.reward,
+                    "agent_name": "adaucb",
+                    "depth": None,
+                }
+            )
+            job_idx += 1
+            for depth in depths:
+                jobs.append(
+                    {
+                        "job_idx": job_idx,
+                        "run_id": run_offset,
+                        "seed": seed,
+                        "K": K,
+                        "d": args.d,
+                        "T": args.T,
+                        "record_every": args.record_every,
+                        "reward_name": args.reward,
+                        "agent_name": "binucb",
+                        "depth": depth,
+                    }
+                )
+                job_idx += 1
+
+    total_jobs = len(jobs)
+    if Parallel is None or delayed is None:
+        print("joblib is not installed; running sequentially. Install with: pip install joblib")
+        results = [run_job(**job) for job in jobs]
+    else:
+        print(f"Running {total_jobs} jobs with joblib (n_jobs={args.n_jobs})...")
+        results = Parallel(n_jobs=args.n_jobs, verbose=args.parallel_verbose)(
+            delayed(run_job)(**job) for job in jobs
+        )
+    results.sort(key=lambda item: item[0])
 
     with output_csv.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
-
-        for run_offset in range(args.num_runs):
-            seed = args.seed_start + run_offset
-            for K in Ks:
-                run_counter += 1
-                print(f"[{run_counter}/{total_jobs}] seed={seed} K={K} agent=adaucb")
-                adaucb_series = run_one_configuration(
-                    seed=seed,
-                    K=K,
-                    d=args.d,
-                    T=args.T,
-                    record_every=args.record_every,
-                    reward_name=args.reward,
-                    agent_name="adaucb",
-                    depth=None,
+        for _, run_id, seed, K, reward_name, agent_name, depth, T, series in results:
+            for round_idx, cumulative_regret, cumulative_global_regret in series:
+                writer.writerow(
+                    {
+                        "run_id": run_id,
+                        "seed": seed,
+                        "K": K,
+                        "d": args.d,
+                        "reward": reward_name,
+                        "agent": agent_name,
+                        "depth": "" if depth is None else depth,
+                        "T": T,
+                        "round": round_idx,
+                        "cumulative_regret": cumulative_regret,
+                        "cumulative_global_regret": cumulative_global_regret,
+                    }
                 )
-                for round_idx, cumulative_regret, cumulative_global_regret in adaucb_series:
-                    writer.writerow(
-                        {
-                            "run_id": run_offset,
-                            "seed": seed,
-                            "K": K,
-                            "d": args.d,
-                            "reward": args.reward,
-                            "agent": "adaucb",
-                            "depth": "",
-                            "T": args.T,
-                            "round": round_idx,
-                            "cumulative_regret": cumulative_regret,
-                            "cumulative_global_regret": cumulative_global_regret,
-                        }
-                    )
-
-                for depth in depths:
-                    run_counter += 1
-                    print(f"[{run_counter}/{total_jobs}] seed={seed} K={K} agent=binucb depth={depth}")
-                    binucb_series = run_one_configuration(
-                        seed=seed,
-                        K=K,
-                        d=args.d,
-                        T=args.T,
-                        record_every=args.record_every,
-                        reward_name=args.reward,
-                        agent_name="binucb",
-                        depth=depth,
-                    )
-                    for round_idx, cumulative_regret, cumulative_global_regret in binucb_series:
-                        writer.writerow(
-                            {
-                                "run_id": run_offset,
-                                "seed": seed,
-                                "K": K,
-                                "d": args.d,
-                                "reward": args.reward,
-                                "agent": "binucb",
-                                "depth": depth,
-                                "T": args.T,
-                                "round": round_idx,
-                                "cumulative_regret": cumulative_regret,
-                                "cumulative_global_regret": cumulative_global_regret,
-                            }
-                        )
 
     print(f"Saved CSV to: {output_csv}")
 
